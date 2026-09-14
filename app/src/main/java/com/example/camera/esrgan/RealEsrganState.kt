@@ -13,6 +13,11 @@ data class RealEsrganState(
     val activeMode: PhotoMegapixelMode? = null,
     val isGpuActive: Boolean = true,
     val targetResolutionText: String = "",
+    val inputResolutionText: String = "",
+    val loadedModelName: String = "",
+    val backendName: String = "",
+    val scaleFactorText: String = "",
+    val tileCountText: String = "",
     val finalUri: Uri? = null,
     val error: String? = null
 )

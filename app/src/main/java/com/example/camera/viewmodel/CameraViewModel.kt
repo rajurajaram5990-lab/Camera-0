@@ -963,7 +963,12 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         engine.takePhoto { uri ->
             if (uri != null) {
                 if (isSuperRes) {
-                    showToast("${mode.label} captured! Tap thumbnail to enhance with Real-ESRGAN")
+                    val pending = engine.lastCapturedMedia.value
+                    if (pending != null && pending.isPendingAiProcessing) {
+                        startRealEsrganProcessing(pending)
+                    } else {
+                        showToast("${mode.label} captured! Processing Real-ESRGAN...")
+                    }
                 } else {
                     showToast("Saved to DCIM/Camera")
                 }
@@ -987,13 +992,12 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val isGpu = engine.realEsrganEngine.isGpuAccelerated()
                 _realEsrganState.value = RealEsrganState(
                     isProcessing = true,
                     progress = 0.05f,
                     stageMessage = "Loading high-precision sensor frame...",
                     activeMode = mode,
-                    isGpuActive = isGpu
+                    isGpuActive = true
                 )
 
                 val options = android.graphics.BitmapFactory.Options().apply {
@@ -1004,7 +1008,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 if (sourceBitmap == null) {
                     _realEsrganState.value = _realEsrganState.value.copy(
                         isProcessing = false,
-                        error = "Could not decode source frame"
+                        error = "Could not decode source sensor frame"
                     )
                     return@launch
                 }
@@ -1012,10 +1016,17 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 val finalUri = engine.realEsrganEngine.processAndSaveRealEsrgan(
                     sourceBitmap = sourceBitmap,
                     targetMode = mode,
-                    onProgress = { prog, stage ->
+                    onProgress = { prog, stage, info ->
                         _realEsrganState.value = _realEsrganState.value.copy(
                             progress = prog,
-                            stageMessage = stage
+                            stageMessage = stage,
+                            loadedModelName = info.modelName,
+                            backendName = info.backendName,
+                            inputResolutionText = info.inputRes,
+                            targetResolutionText = info.targetRes,
+                            scaleFactorText = info.scaleFactor,
+                            tileCountText = "${info.completedTiles}/${info.totalTiles}",
+                            isGpuActive = info.backendName.contains("GPU")
                         )
                     }
                 )
@@ -1023,35 +1034,28 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 sourceBitmap.recycle()
                 try { file.delete() } catch (ignored: Exception) {}
 
-                if (finalUri != null) {
-                    val updatedMedia = media.copy(
-                        uri = finalUri,
-                        displayName = "Real-ESRGAN ${mode.label}.jpg",
-                        isPendingAiProcessing = false,
-                        pendingRawFilePath = null
-                    )
-                    engine.setLastCapturedMedia(updatedMedia)
-                    _realEsrganState.value = _realEsrganState.value.copy(
-                        isProcessing = false,
-                        progress = 1.0f,
-                        stageMessage = "Super Resolution complete!",
-                        finalUri = finalUri
-                    )
-                    withContext(Dispatchers.Main) {
-                        _isMediaViewerOpen.value = true
-                        showToast("${mode.label} Real-ESRGAN photo saved to Gallery")
-                    }
-                } else {
-                    _realEsrganState.value = _realEsrganState.value.copy(
-                        isProcessing = false,
-                        error = "Real-ESRGAN processing failed"
-                    )
+                val updatedMedia = media.copy(
+                    uri = finalUri,
+                    displayName = "Real-ESRGAN ${mode.label}.jpg",
+                    isPendingAiProcessing = false,
+                    pendingRawFilePath = null
+                )
+                engine.setLastCapturedMedia(updatedMedia)
+                _realEsrganState.value = _realEsrganState.value.copy(
+                    isProcessing = false,
+                    progress = 1.0f,
+                    stageMessage = "Super Resolution complete!",
+                    finalUri = finalUri
+                )
+                withContext(Dispatchers.Main) {
+                    _isMediaViewerOpen.value = true
+                    showToast("${mode.label} Real-ESRGAN photo saved to Gallery")
                 }
             } catch (e: Exception) {
                 Log.e("CameraViewModel", "Real-ESRGAN processing error", e)
                 _realEsrganState.value = _realEsrganState.value.copy(
                     isProcessing = false,
-                    error = e.message ?: "Unknown error"
+                    error = e.message ?: "Real-ESRGAN processing failed"
                 )
             }
         }

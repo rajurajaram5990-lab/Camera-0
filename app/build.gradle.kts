@@ -69,6 +69,9 @@ android {
     buildConfig = true
   }
   testOptions { unitTests { isIncludeAndroidResources = true } }
+  androidResources {
+    noCompress += "tflite"
+  }
   dependenciesInfo {
     includeInApk = false
     includeInBundle = true
@@ -141,6 +144,8 @@ dependencies {
   // implementation(libs.play.services.location)
   implementation(libs.retrofit)
   implementation(libs.mlkit.segmentation.selfie)
+  implementation(libs.tensorflow.lite)
+  implementation(libs.tensorflow.lite.gpu)
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
   testImplementation(libs.androidx.junit)
