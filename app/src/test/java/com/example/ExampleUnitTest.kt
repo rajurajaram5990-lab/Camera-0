@@ -228,4 +228,43 @@ class ExampleUnitTest {
         tempFile.delete()
         assertFalse(tempFile.exists())
     }
+
+    @Test
+    fun testRealEsrganWorkingDirAndTempFileLifecycle() {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        val engine = com.example.camera.engine.Camera2Engine(context)
+
+        // 1. Verify working directory is safely created and writable on API 36 / Moto G96
+        val workingDir = engine.getRealEsrganWorkingDir()
+        assertNotNull(workingDir)
+        assertTrue(workingDir.exists())
+        assertTrue(workingDir.canWrite())
+
+        // 2. Simulate pending Real-ESRGAN frame creation and JPEG compression
+        val timestamp = System.currentTimeMillis()
+        val tempFile = java.io.File(workingDir, "pending_esrgan_${timestamp}_test.jpg")
+        tempFile.parentFile?.mkdirs()
+
+        val dummyBitmap = android.graphics.Bitmap.createBitmap(128, 128, android.graphics.Bitmap.Config.ARGB_8888)
+        java.io.FileOutputStream(tempFile).use { fos ->
+            val compressed = dummyBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, fos)
+            assertTrue(compressed)
+            fos.flush()
+        }
+        dummyBitmap.recycle()
+
+        // 3. Verify file exists, has non-zero length, and does not throw ENOENT
+        assertTrue(tempFile.exists())
+        assertTrue(tempFile.length() > 0)
+
+        // 4. Verify decode verification matches
+        val options = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeFile(tempFile.absolutePath, options)
+        assertEquals(128, options.outWidth)
+        assertEquals(128, options.outHeight)
+
+        // 5. Cleanup after lifecycle completion
+        tempFile.delete()
+        assertFalse(tempFile.exists())
+    }
 }

@@ -984,9 +984,21 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
      */
     fun startRealEsrganProcessing(media: CapturedMedia) {
         if (_realEsrganState.value.isProcessing) return
-        val filePath = media.pendingRawFilePath ?: return
+        val filePath = media.pendingRawFilePath ?: run {
+            _realEsrganState.value = RealEsrganState(
+                isProcessing = false,
+                error = "Pending base frame path is missing"
+            )
+            return
+        }
         val file = File(filePath)
-        if (!file.exists()) return
+        if (!file.exists() || file.length() == 0L) {
+            _realEsrganState.value = RealEsrganState(
+                isProcessing = false,
+                error = "Pending sensor frame does not exist or is empty: ${file.name}"
+            )
+            return
+        }
 
         val mode = media.aiResolutionMode ?: _photoMegapixelMode.value
 
@@ -1008,7 +1020,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 if (sourceBitmap == null) {
                     _realEsrganState.value = _realEsrganState.value.copy(
                         isProcessing = false,
-                        error = "Could not decode source sensor frame"
+                        error = "Could not decode source sensor frame: ${file.name}"
                     )
                     return@launch
                 }
@@ -1032,7 +1044,9 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 )
 
                 sourceBitmap.recycle()
-                try { file.delete() } catch (ignored: Exception) {}
+                if (finalUri != null) {
+                    try { file.delete() } catch (ignored: Exception) {}
+                }
 
                 val updatedMedia = media.copy(
                     uri = finalUri,
@@ -1051,11 +1065,11 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                     _isMediaViewerOpen.value = true
                     showToast("${mode.label} Real-ESRGAN photo saved to Gallery")
                 }
-            } catch (e: Exception) {
-                Log.e("CameraViewModel", "Real-ESRGAN processing error", e)
+            } catch (t: Throwable) {
+                Log.e("CameraViewModel", "Real-ESRGAN processing error", t)
                 _realEsrganState.value = _realEsrganState.value.copy(
                     isProcessing = false,
-                    error = e.message ?: "Real-ESRGAN processing failed"
+                    error = t.message ?: "Real-ESRGAN processing failed"
                 )
             }
         }

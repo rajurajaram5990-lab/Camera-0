@@ -2436,9 +2436,14 @@ class Camera2Engine(private val context: Context) {
         val midDiopters = lastFocusDiopters.coerceIn(0f, minFocusDist)
         val farDiopters = (lastFocusDiopters * 0.25f).coerceIn(0f, minFocusDist)
 
-        val tempNearFile = File(context.cacheDir, "refocus_tmp_near_${System.currentTimeMillis()}.jpg")
-        val tempMidFile = File(context.cacheDir, "refocus_tmp_mid_${System.currentTimeMillis()}.jpg")
-        val tempFarFile = File(context.cacheDir, "refocus_tmp_far_${System.currentTimeMillis()}.jpg")
+        val baseCache = context.cacheDir ?: context.filesDir
+        if (!baseCache.exists()) {
+            try { baseCache.mkdirs() } catch (ignored: Exception) {}
+        }
+        val tempNearFile = File(baseCache, "refocus_tmp_near_${System.currentTimeMillis()}.jpg")
+        val tempMidFile = File(baseCache, "refocus_tmp_mid_${System.currentTimeMillis()}.jpg")
+        val tempFarFile = File(baseCache, "refocus_tmp_far_${System.currentTimeMillis()}.jpg")
+        tempNearFile.parentFile?.mkdirs()
 
         var savedNormalUri: Uri? = null
         var framesReceived = 0
@@ -2801,6 +2806,60 @@ class Camera2Engine(private val context: Context) {
      * The raw frame is stored as a pending file and returned to the UI so the user can tap the thumbnail
      * to launch the official xinntao/Real-ESRGAN tile-based GPU super-resolution pipeline.
      */
+    /**
+     * Obtains and guarantees existence of the temporary working directory for Real-ESRGAN frames.
+     * Checks multiple candidates (internal cacheDir, externalCacheDir, filesDir) and ensures mkdirs() succeeds.
+     */
+    fun getRealEsrganWorkingDir(): File {
+        val candidates = listOfNotNull(
+            context.cacheDir,
+            context.externalCacheDir,
+            context.filesDir
+        )
+        for (candidate in candidates) {
+            try {
+                if (!candidate.exists()) {
+                    candidate.mkdirs()
+                }
+                val esrganSubdir = File(candidate, "pending_esrgan")
+                if (!esrganSubdir.exists()) {
+                    val created = esrganSubdir.mkdirs()
+                    if (created || esrganSubdir.exists()) {
+                        return esrganSubdir
+                    }
+                } else if (esrganSubdir.canWrite()) {
+                    return esrganSubdir
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not use candidate cache directory: ${candidate.absolutePath}", e)
+            }
+        }
+        // Direct fallback: ensure filesDir/pending_esrgan exists
+        val fallbackDir = File(context.filesDir, "pending_esrgan")
+        try { fallbackDir.mkdirs() } catch (ignored: Exception) {}
+        return fallbackDir
+    }
+
+    private fun getRealEsrganTempFile(): File {
+        val workingDir = getRealEsrganWorkingDir()
+        if (!workingDir.exists()) {
+            workingDir.mkdirs()
+        }
+        val timestamp = System.currentTimeMillis()
+        val nano = System.nanoTime()
+        val tempFile = File(workingDir, "pending_esrgan_${timestamp}_$nano.jpg")
+        val parent = tempFile.parentFile
+        if (parent != null && !parent.exists()) {
+            parent.mkdirs()
+        }
+        return tempFile
+    }
+
+    /**
+     * Captures a high-resolution base frame for Real-ESRGAN super-resolution processing.
+     * The raw frame is stored as a pending file and returned to the UI so the user can tap the thumbnail
+     * or have it auto-processed by the official xinntao/Real-ESRGAN tile-based GPU super-resolution pipeline.
+     */
     fun takePhotoRealEsrgan(mode: PhotoMegapixelMode, onComplete: (Uri?) -> Unit) {
         val camera = cameraDevice ?: run {
             onComplete(null)
@@ -2813,6 +2872,17 @@ class Camera2Engine(private val context: Context) {
         val readerJpeg = imageReaderJpeg ?: run {
             onComplete(null)
             return
+        }
+
+        // Verify and ensure working directory exists before capture
+        val workingDir = getRealEsrganWorkingDir()
+        if (!workingDir.exists()) {
+            val created = workingDir.mkdirs()
+            if (!created && !workingDir.exists()) {
+                Log.e(TAG, "Cannot create working directory for Real-ESRGAN: ${workingDir.absolutePath}")
+                onComplete(null)
+                return
+            }
         }
 
         _isCapturing.value = true
@@ -2863,7 +2933,12 @@ class Camera2Engine(private val context: Context) {
                         inSampleSize = 1
                         inPreferredConfig = Bitmap.Config.ARGB_8888
                     }
-                    val rawBitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+                    val rawBitmap = try {
+                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "Error decoding raw frame for Real-ESRGAN", t)
+                        null
+                    }
 
                     if (rawBitmap != null) {
                         val exif = try {
@@ -2893,43 +2968,77 @@ class Camera2Engine(private val context: Context) {
                             matrix.postScale(-1f, 1f)
                         }
 
-                        val uprightBitmap = if (!matrix.isIdentity) {
-                            val rotated = Bitmap.createBitmap(
-                                rawBitmap, 0, 0, rawBitmap.width, rawBitmap.height, matrix, true
-                            )
-                            if (rotated != rawBitmap) {
-                                rawBitmap.recycle()
+                        val uprightBitmap = try {
+                            if (!matrix.isIdentity) {
+                                val rotated = Bitmap.createBitmap(
+                                    rawBitmap, 0, 0, rawBitmap.width, rawBitmap.height, matrix, true
+                                )
+                                if (rotated != rawBitmap) {
+                                    rawBitmap.recycle()
+                                }
+                                rotated
+                            } else {
+                                rawBitmap
                             }
-                            rotated
-                        } else {
+                        } catch (t: Throwable) {
+                            Log.e(TAG, "Failed rotating frame, using unrotated bitmap", t)
                             rawBitmap
                         }
 
                         engineScope.launch(Dispatchers.IO) {
-                            // Save upright base capture to cache file for pending Real-ESRGAN processing
-                            val tempFile = File(context.cacheDir, "pending_esrgan_${System.currentTimeMillis()}.jpg")
-                            java.io.FileOutputStream(tempFile).use { fos ->
-                                uprightBitmap.compress(Bitmap.CompressFormat.JPEG, 98, fos)
-                                fos.flush()
-                            }
-                            if (!uprightBitmap.isRecycled) {
-                                uprightBitmap.recycle()
-                            }
+                            var tempFile: File? = null
+                            try {
+                                tempFile = getRealEsrganTempFile()
+                                val parentDir = tempFile.parentFile
+                                if (parentDir != null && !parentDir.exists()) {
+                                    parentDir.mkdirs()
+                                }
 
-                            val pendingUri = Uri.fromFile(tempFile)
-                            val captured = CapturedMedia(
-                                uri = pendingUri,
-                                isVideo = false,
-                                timestamp = System.currentTimeMillis(),
-                                displayName = "${mode.label} AI (Tap to Process)",
-                                isPendingAiProcessing = true,
-                                aiResolutionMode = mode,
-                                pendingRawFilePath = tempFile.absolutePath
-                            )
-                            _lastCapturedMedia.value = captured
-                            _isCapturing.value = false
-                            withContext(Dispatchers.Main) {
-                                onComplete(pendingUri)
+                                java.io.FileOutputStream(tempFile).use { fos ->
+                                    val compressed = uprightBitmap.compress(Bitmap.CompressFormat.JPEG, 98, fos)
+                                    if (!compressed) {
+                                        throw java.io.IOException("Bitmap JPEG compression failed for Real-ESRGAN pending frame")
+                                    }
+                                    fos.flush()
+                                    try {
+                                        fos.fd.sync()
+                                    } catch (ignored: Exception) {}
+                                }
+
+                                if (!tempFile.exists() || tempFile.length() == 0L) {
+                                    throw java.io.IOException("Pending ESRGAN file was not written or is 0 bytes: ${tempFile.absolutePath}")
+                                }
+
+                                Log.d(TAG, "Real-ESRGAN pending base frame written successfully: ${tempFile.absolutePath} (${tempFile.length()} bytes)")
+
+                                val pendingUri = Uri.fromFile(tempFile)
+                                val captured = CapturedMedia(
+                                    uri = pendingUri,
+                                    isVideo = false,
+                                    timestamp = System.currentTimeMillis(),
+                                    displayName = "${mode.label} AI (Processing...)",
+                                    isPendingAiProcessing = true,
+                                    aiResolutionMode = mode,
+                                    pendingRawFilePath = tempFile.absolutePath
+                                )
+                                _lastCapturedMedia.value = captured
+                                _isCapturing.value = false
+                                withContext(Dispatchers.Main) {
+                                    onComplete(pendingUri)
+                                }
+                            } catch (t: Throwable) {
+                                Log.e(TAG, "Error writing temporary Real-ESRGAN base frame to ${tempFile?.absolutePath}", t)
+                                try {
+                                    tempFile?.delete()
+                                } catch (ignored: Exception) {}
+                                _isCapturing.value = false
+                                withContext(Dispatchers.Main) {
+                                    onComplete(null)
+                                }
+                            } finally {
+                                if (!uprightBitmap.isRecycled) {
+                                    uprightBitmap.recycle()
+                                }
                             }
                         }
                     } else {
