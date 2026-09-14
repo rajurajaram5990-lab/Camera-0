@@ -373,15 +373,19 @@ fun SettingsDrawer(
                                             onToggle = { onRefocusPhotoToggle(!isRefocusPhotoEnabled) }
                                         )
                                         HorizontalDivider(color = Color(0xFFF3F4F6), thickness = 1.dp)
-                                        LightToggleRow(
-                                            title = "50MP Computational Mode",
-                                            subtitle = "Single-frame native sensor capture with detail synthesis",
-                                            isChecked = photoMegapixelMode == PhotoMegapixelMode.M50,
-                                            onToggle = {
-                                                val next = if (photoMegapixelMode == PhotoMegapixelMode.M50) PhotoMegapixelMode.M12 else PhotoMegapixelMode.M50
-                                                onPhotoMegapixelModeSelected(next)
-                                            }
+                                        Text("Real-ESRGAN AI Super Resolution", fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF1F2937))
+                                        Text(
+                                            "Official xinntao/Real-ESRGAN neural upscaling with GPU acceleration, dynamic tiling & crash protection",
+                                            fontSize = 11.5.sp,
+                                            color = Color(0xFF6B7280),
+                                            lineHeight = 15.sp
                                         )
+                                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            LightSelectPill("12M Off", photoMegapixelMode == PhotoMegapixelMode.M12, { onPhotoMegapixelModeSelected(PhotoMegapixelMode.M12) }, Modifier.weight(1f))
+                                            LightSelectPill("50MP", photoMegapixelMode == PhotoMegapixelMode.M50, { onPhotoMegapixelModeSelected(PhotoMegapixelMode.M50) }, Modifier.weight(1f))
+                                            LightSelectPill("100MP", photoMegapixelMode == PhotoMegapixelMode.M100, { onPhotoMegapixelModeSelected(PhotoMegapixelMode.M100) }, Modifier.weight(1f))
+                                            LightSelectPill("200MP", photoMegapixelMode == PhotoMegapixelMode.M200, { onPhotoMegapixelModeSelected(PhotoMegapixelMode.M200) }, Modifier.weight(1f))
+                                        }
                                         HorizontalDivider(color = Color(0xFFF3F4F6), thickness = 1.dp)
                                         if (capabilities.supportsRaw) {
                                             LightToggleRow(

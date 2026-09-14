@@ -10,7 +10,9 @@ import androidx.lifecycle.viewModelScope
 import com.example.camera.data.CameraPreferences
 import com.example.camera.engine.Camera2Engine
 import com.example.camera.engine.PortraitProcessor
+import com.example.camera.esrgan.RealEsrganState
 import com.example.camera.model.*
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
@@ -151,9 +153,13 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     private val _isCinemaSettingsOpen = MutableStateFlow(false)
     val isCinemaSettingsOpen: StateFlow<Boolean> = _isCinemaSettingsOpen.asStateFlow()
 
-    // Photo Megapixel Mode (12M vs 50M Ultra)
+    // Photo Megapixel Mode (12M, 50M, 100M, 200M Real-ESRGAN AI Super Resolution)
     private val _photoMegapixelMode = MutableStateFlow(preferences.photoMegapixelMode)
     val photoMegapixelMode: StateFlow<PhotoMegapixelMode> = _photoMegapixelMode.asStateFlow()
+
+    // Real-ESRGAN AI Super Resolution State
+    private val _realEsrganState = MutableStateFlow(RealEsrganState())
+    val realEsrganState: StateFlow<RealEsrganState> = _realEsrganState.asStateFlow()
 
     // Refocus Photo Mode
     private val _isRefocusPhotoEnabled = MutableStateFlow(preferences.isRefocusPhotoEnabled)
@@ -205,24 +211,25 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         _photoMegapixelMode.value = mode
         preferences.photoMegapixelMode = mode
         engine.photoMegapixelMode = mode
-        if (mode == PhotoMegapixelMode.M50) {
-            showToast("50M Computational Ultra HD")
+        if (mode.isSuperResolution) {
+            showToast("${mode.label} Real-ESRGAN AI Super Resolution")
         } else {
             showToast("12M Standard Mode")
         }
     }
 
     fun togglePhotoMegapixelMode() {
-        val next = if (_photoMegapixelMode.value == PhotoMegapixelMode.M12) {
-            PhotoMegapixelMode.M50
-        } else {
-            PhotoMegapixelMode.M12
+        val next = when (_photoMegapixelMode.value) {
+            PhotoMegapixelMode.M12 -> PhotoMegapixelMode.M50
+            PhotoMegapixelMode.M50 -> PhotoMegapixelMode.M100
+            PhotoMegapixelMode.M100 -> PhotoMegapixelMode.M200
+            PhotoMegapixelMode.M200 -> PhotoMegapixelMode.M12
         }
         _photoMegapixelMode.value = next
         preferences.photoMegapixelMode = next
         engine.photoMegapixelMode = next
-        if (next == PhotoMegapixelMode.M50) {
-            showToast("50M Computational Ultra HD")
+        if (next.isSuperResolution) {
+            showToast("${next.label} Real-ESRGAN AI Super Resolution")
         } else {
             showToast("12M Standard Mode")
         }
@@ -948,14 +955,15 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun executePhotoCapture() {
-        val is50M = _photoMegapixelMode.value == PhotoMegapixelMode.M50
-        if (is50M) {
-            showToast("Processing 50MP Computational photo...")
+        val mode = _photoMegapixelMode.value
+        val isSuperRes = mode.isSuperResolution
+        if (isSuperRes) {
+            showToast("Capturing ${mode.label} sensor frame...")
         }
         engine.takePhoto { uri ->
             if (uri != null) {
-                if (is50M) {
-                    showToast("50MP Computational photo saved to DCIM/Camera")
+                if (isSuperRes) {
+                    showToast("${mode.label} captured! Tap thumbnail to enhance with Real-ESRGAN")
                 } else {
                     showToast("Saved to DCIM/Camera")
                 }
@@ -963,6 +971,94 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 showToast("Failed to save photo")
             }
         }
+    }
+
+    /**
+     * Starts the official xinntao/Real-ESRGAN AI Super Resolution processing pipeline
+     * on the pending captured sensor frame.
+     */
+    fun startRealEsrganProcessing(media: CapturedMedia) {
+        if (_realEsrganState.value.isProcessing) return
+        val filePath = media.pendingRawFilePath ?: return
+        val file = File(filePath)
+        if (!file.exists()) return
+
+        val mode = media.aiResolutionMode ?: _photoMegapixelMode.value
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val isGpu = engine.realEsrganEngine.isGpuAccelerated()
+                _realEsrganState.value = RealEsrganState(
+                    isProcessing = true,
+                    progress = 0.05f,
+                    stageMessage = "Loading high-precision sensor frame...",
+                    activeMode = mode,
+                    isGpuActive = isGpu
+                )
+
+                val options = android.graphics.BitmapFactory.Options().apply {
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                    inMutable = true
+                }
+                val sourceBitmap = android.graphics.BitmapFactory.decodeFile(file.absolutePath, options)
+                if (sourceBitmap == null) {
+                    _realEsrganState.value = _realEsrganState.value.copy(
+                        isProcessing = false,
+                        error = "Could not decode source frame"
+                    )
+                    return@launch
+                }
+
+                val finalUri = engine.realEsrganEngine.processAndSaveRealEsrgan(
+                    sourceBitmap = sourceBitmap,
+                    targetMode = mode,
+                    onProgress = { prog, stage ->
+                        _realEsrganState.value = _realEsrganState.value.copy(
+                            progress = prog,
+                            stageMessage = stage
+                        )
+                    }
+                )
+
+                sourceBitmap.recycle()
+                try { file.delete() } catch (ignored: Exception) {}
+
+                if (finalUri != null) {
+                    val updatedMedia = media.copy(
+                        uri = finalUri,
+                        displayName = "Real-ESRGAN ${mode.label}.jpg",
+                        isPendingAiProcessing = false,
+                        pendingRawFilePath = null
+                    )
+                    engine.setLastCapturedMedia(updatedMedia)
+                    _realEsrganState.value = _realEsrganState.value.copy(
+                        isProcessing = false,
+                        progress = 1.0f,
+                        stageMessage = "Super Resolution complete!",
+                        finalUri = finalUri
+                    )
+                    withContext(Dispatchers.Main) {
+                        _isMediaViewerOpen.value = true
+                        showToast("${mode.label} Real-ESRGAN photo saved to Gallery")
+                    }
+                } else {
+                    _realEsrganState.value = _realEsrganState.value.copy(
+                        isProcessing = false,
+                        error = "Real-ESRGAN processing failed"
+                    )
+                }
+            } catch (e: Exception) {
+                Log.e("CameraViewModel", "Real-ESRGAN processing error", e)
+                _realEsrganState.value = _realEsrganState.value.copy(
+                    isProcessing = false,
+                    error = e.message ?: "Unknown error"
+                )
+            }
+        }
+    }
+
+    fun resetRealEsrganState() {
+        _realEsrganState.value = RealEsrganState()
     }
 
     private fun triggerPortraitCapture() {

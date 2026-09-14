@@ -170,30 +170,43 @@ fun TopControlBar(
         val primaryBadge = @Composable {
             when (cameraMode) {
                 CameraMode.PHOTO -> {
-                    val is50M = photoMegapixelMode == PhotoMegapixelMode.M50
+                    val isSuperRes = photoMegapixelMode.isSuperResolution
                     Box(
                         modifier = Modifier
                             .height(34.dp)
                             .clip(RoundedCornerShape(17.dp))
-                            .background(if (is50M) accentColor.copy(alpha = 0.2f) else Color(0xB21A1A1E))
+                            .background(if (isSuperRes) accentColor.copy(alpha = 0.2f) else Color(0xB21A1A1E))
                             .border(
                                 1.dp,
-                                if (is50M) accentColor else Color.White.copy(alpha = 0.22f),
+                                if (isSuperRes) accentColor else Color.White.copy(alpha = 0.22f),
                                 RoundedCornerShape(17.dp)
                             )
                             .clickable { onToggleMegapixelMode() }
                             .padding(horizontal = 12.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(
-                            text = photoMegapixelMode.label,
-                            color = if (is50M) accentColor else Color.White,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 0.5.sp,
-                            maxLines = 1,
-                            softWrap = false
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            if (isSuperRes) {
+                                Text(
+                                    text = "AI",
+                                    color = accentColor,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                            }
+                            Text(
+                                text = photoMegapixelMode.label,
+                                color = if (isSuperRes) accentColor else Color.White,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 0.5.sp,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
                     }
                 }
                 CameraMode.PORTRAIT -> {

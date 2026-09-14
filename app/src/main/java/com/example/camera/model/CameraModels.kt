@@ -383,7 +383,10 @@ data class CapturedMedia(
     val isVideo: Boolean,
     val timestamp: Long,
     val displayName: String,
-    val isFrontCamera: Boolean = false
+    val isFrontCamera: Boolean = false,
+    val isPendingAiProcessing: Boolean = false,
+    val aiResolutionMode: PhotoMegapixelMode? = null,
+    val pendingRawFilePath: String? = null
 )
 
 enum class DollyDirection(val label: String) {

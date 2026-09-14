@@ -137,6 +137,7 @@ fun CameraScreen(
     val activeProTab by viewModel.activeProTab.collectAsStateWithLifecycle()
     val isSettingsOpen by viewModel.isSettingsOpen.collectAsStateWithLifecycle()
     val isMediaViewerOpen by viewModel.isMediaViewerOpen.collectAsStateWithLifecycle()
+    val realEsrganState by viewModel.realEsrganState.collectAsStateWithLifecycle()
     val focusRingPoint by viewModel.focusRingPoint.collectAsStateWithLifecycle()
     val toastMessage by viewModel.toastMessage.collectAsStateWithLifecycle()
 
@@ -193,6 +194,7 @@ fun CameraScreen(
     val aiZoomProgress by viewModel.aiZoomProgress.collectAsStateWithLifecycle()
 
     var isCustomUiStudioOpen by remember { mutableStateOf(false) }
+    var isRealEsrganDialogOpen by remember { mutableStateOf(false) }
 
     if (cameraMode == CameraMode.AI_SUBJECT_TRACKING) {
         com.example.camera.tracking.ui.AiSubjectTrackingScreen(
@@ -650,8 +652,13 @@ fun CameraScreen(
             onShutterClick = { viewModel.onMainActionButtonClick() },
             onFlipCameraClick = { viewModel.toggleCameraFacing() },
             onGalleryClick = {
-                if (lastCapturedMedia != null) {
-                    viewModel.setMediaViewerOpen(true)
+                val media = lastCapturedMedia
+                if (media != null) {
+                    if (media.isPendingAiProcessing) {
+                        isRealEsrganDialogOpen = true
+                    } else {
+                        viewModel.setMediaViewerOpen(true)
+                    }
                 } else {
                     viewModel.showToast("No recent photos yet")
                 }
@@ -801,6 +808,20 @@ fun CameraScreen(
                 onDeleteCustomPreset = { presetId ->
                     viewModel.deleteCustomPreset(presetId)
                     viewModel.showToast("Preset deleted")
+                }
+            )
+        }
+
+        // 9. Real-ESRGAN AI Super Resolution Processing Modal
+        val pendingMedia = lastCapturedMedia
+        if ((isRealEsrganDialogOpen || realEsrganState.isProcessing) && pendingMedia != null) {
+            RealEsrganProcessingDialog(
+                media = pendingMedia,
+                state = realEsrganState,
+                onStartProcessing = { viewModel.startRealEsrganProcessing(pendingMedia) },
+                onDismiss = {
+                    isRealEsrganDialogOpen = false
+                    viewModel.resetRealEsrganState()
                 }
             )
         }

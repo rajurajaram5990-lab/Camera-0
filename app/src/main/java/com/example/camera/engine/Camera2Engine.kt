@@ -119,6 +119,10 @@ class Camera2Engine(private val context: Context) {
     private val _lastCapturedMedia = MutableStateFlow<CapturedMedia?>(null)
     val lastCapturedMedia: StateFlow<CapturedMedia?> = _lastCapturedMedia.asStateFlow()
 
+    fun setLastCapturedMedia(media: CapturedMedia?) {
+        _lastCapturedMedia.value = media
+    }
+
     private val _isCameraReady = MutableStateFlow(false)
     val isCameraReady: StateFlow<Boolean> = _isCameraReady.asStateFlow()
 
@@ -217,7 +221,7 @@ class Camera2Engine(private val context: Context) {
     private val _cinemaCapabilities = MutableStateFlow(cinemaEngine.capabilities)
     val cinemaCapabilities: StateFlow<CinemaHardwareCapabilities> = _cinemaCapabilities.asStateFlow()
 
-    val ultraRes50MStacker = UltraRes50MStacker(context)
+    val realEsrganEngine = com.example.camera.esrgan.RealEsrganEngine(context)
     val refocusEngine = RefocusEngine(context)
     val dbsrEngine = com.example.camera.dbsr.DbsrEngine(context)
     var photoMegapixelMode: PhotoMegapixelMode = PhotoMegapixelMode.M12
@@ -1233,8 +1237,8 @@ class Camera2Engine(private val context: Context) {
         imageReaderRaw = null
 
         val caps = _capabilities.value
-        val is50MMode = photoMegapixelMode == PhotoMegapixelMode.M50
-        val photoRes = if (is50MMode) {
+        val isSuperResMode = photoMegapixelMode.isSuperResolution
+        val photoRes = if (isSuperResMode) {
             caps.supportedPhotoResolutions.maxByOrNull { it.width * it.height }
                 ?: _selectedPhotoResolution.value
                 ?: CameraResolution(4000, 3000)
@@ -2302,11 +2306,11 @@ class Camera2Engine(private val context: Context) {
     }
 
     /**
-     * Take still photo (JPEG + optional RAW). In 50M mode, triggers single-frame computational 50MP capture.
+     * Take still photo (JPEG + optional RAW). In Super Resolution mode (50M/100M/200M), triggers Real-ESRGAN capture.
      */
     fun takePhoto(onComplete: (Uri?) -> Unit) {
-        if (photoMegapixelMode == PhotoMegapixelMode.M50) {
-            takePhoto50M(onComplete)
+        if (photoMegapixelMode.isSuperResolution) {
+            takePhotoRealEsrgan(photoMegapixelMode, onComplete)
             return
         }
 
@@ -2791,13 +2795,13 @@ class Camera2Engine(private val context: Context) {
     }
 
     /**
-     * 50 Megapixel Computational Ultra-Resolution Capture:
-     * Captures ONLY ONE native-resolution frame from the physical camera with OIS/EIS
-     * stabilization, completely eliminating ghosting, motion blur, and double edges.
-     * The single frame is then processed through an edge-aware, detail-preserving
-     * computational upscaling and adaptive denoising pipeline.
+     * Real-ESRGAN AI Super Resolution capture (50M, 100M, 200M):
+     * Captures a single native-resolution frame with maximum optical sharpness, optimal sensor settings,
+     * and native orientation/EXIF.
+     * The raw frame is stored as a pending file and returned to the UI so the user can tap the thumbnail
+     * to launch the official xinntao/Real-ESRGAN tile-based GPU super-resolution pipeline.
      */
-    fun takePhoto50M(onComplete: (Uri?) -> Unit) {
+    fun takePhotoRealEsrgan(mode: PhotoMegapixelMode, onComplete: (Uri?) -> Unit) {
         val camera = cameraDevice ?: run {
             onComplete(null)
             return
@@ -2816,7 +2820,6 @@ class Camera2Engine(private val context: Context) {
         val isFrontFacing = activeLens?.facing == CameraCharacteristics.LENS_FACING_FRONT
 
         try {
-            // Build exactly ONE native-resolution capture request
             val captureBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
             captureBuilder.addTarget(readerJpeg.surface)
             applyCommonSettings(captureBuilder)
@@ -2825,7 +2828,6 @@ class Camera2Engine(private val context: Context) {
             captureBuilder.set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_HIGH_QUALITY)
             captureBuilder.set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY)
 
-            // Enable ultra-high resolution sensor remosaic mode if physical hardware supports it (Android 12+)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 try {
                     val chars = getCharacteristics(camera.id)
@@ -2839,8 +2841,6 @@ class Camera2Engine(private val context: Context) {
             }
 
             var frameProcessed = false
-            var capturedIso: Int = manualIso ?: 100
-            var capturedExposureNs: Long = manualExposureTimeNs ?: 20_000_000L
 
             readerJpeg.setOnImageAvailableListener({ reader ->
                 val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
@@ -2889,7 +2889,6 @@ class Camera2Engine(private val context: Context) {
                             }
                         }
 
-                        // Front camera viewfinder WYSIWYG mirroring preservation on upright frame
                         if (isFrontFacing && saveSelfieAsPreviewed) {
                             matrix.postScale(-1f, 1f)
                         }
@@ -2906,29 +2905,31 @@ class Camera2Engine(private val context: Context) {
                             rawBitmap
                         }
 
-                        engineScope.launch(Dispatchers.Default) {
-                            val uri = ultraRes50MStacker.processAndSaveSingleFrame50M(
-                                source = uprightBitmap,
-                                iso = capturedIso,
-                                exposureTimeNs = capturedExposureNs,
-                                isFrontFacing = false, // already transformed & mirrored upright
-                                saveMirrored = false
-                            )
+                        engineScope.launch(Dispatchers.IO) {
+                            // Save upright base capture to cache file for pending Real-ESRGAN processing
+                            val tempFile = File(context.cacheDir, "pending_esrgan_${System.currentTimeMillis()}.jpg")
+                            java.io.FileOutputStream(tempFile).use { fos ->
+                                uprightBitmap.compress(Bitmap.CompressFormat.JPEG, 98, fos)
+                                fos.flush()
+                            }
                             if (!uprightBitmap.isRecycled) {
                                 uprightBitmap.recycle()
                             }
+
+                            val pendingUri = Uri.fromFile(tempFile)
+                            val captured = CapturedMedia(
+                                uri = pendingUri,
+                                isVideo = false,
+                                timestamp = System.currentTimeMillis(),
+                                displayName = "${mode.label} AI (Tap to Process)",
+                                isPendingAiProcessing = true,
+                                aiResolutionMode = mode,
+                                pendingRawFilePath = tempFile.absolutePath
+                            )
+                            _lastCapturedMedia.value = captured
                             _isCapturing.value = false
-                            updateStorageStats()
-                            if (uri != null) {
-                                _lastCapturedMedia.value = CapturedMedia(
-                                    uri = uri,
-                                    isVideo = false,
-                                    timestamp = System.currentTimeMillis(),
-                                    displayName = "50M_COMPUTATIONAL.jpg"
-                                )
-                            }
                             withContext(Dispatchers.Main) {
-                                onComplete(uri)
+                                onComplete(pendingUri)
                             }
                         }
                     } else {
@@ -2938,7 +2939,7 @@ class Camera2Engine(private val context: Context) {
                         }
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Error acquiring single 50M frame", e)
+                    Log.e(TAG, "Error acquiring Real-ESRGAN base frame", e)
                     try { image.close() } catch (ignored: Exception) {}
                     _isCapturing.value = false
                     engineScope.launch(Dispatchers.Main) {
@@ -2947,21 +2948,18 @@ class Camera2Engine(private val context: Context) {
                 }
             }, backgroundHandler)
 
-            // Capture exactly one frame
             session.capture(captureBuilder.build(), object : CameraCaptureSession.CaptureCallback() {
                 override fun onCaptureCompleted(
                     session: CameraCaptureSession,
                     request: CaptureRequest,
                     result: TotalCaptureResult
                 ) {
-                    capturedIso = result.get(CaptureResult.SENSOR_SENSITIVITY) ?: manualIso ?: 100
-                    capturedExposureNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: manualExposureTimeNs ?: 20_000_000L
-                    Log.d(TAG, "50M single frame capture completed (ISO=$capturedIso, Exp=${capturedExposureNs}ns)")
+                    Log.d(TAG, "Real-ESRGAN frame capture completed")
                 }
             }, backgroundHandler)
 
         } catch (e: Exception) {
-            Log.e(TAG, "Error starting 50M single-frame capture", e)
+            Log.e(TAG, "Error taking Real-ESRGAN photo", e)
             _isCapturing.value = false
             onComplete(null)
         }

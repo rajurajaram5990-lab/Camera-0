@@ -195,12 +195,28 @@ fun BottomControlBar(
                     ) {
                         // Left: Gallery Thumbnail
                         if (layoutConfig.showGalleryButton) {
+                            val isPendingAi = lastCapturedMedia?.isPendingAiProcessing == true
+                            val infiniteTransition = rememberInfiniteTransition(label = "gallery_pulse")
+                            val glowAlpha by infiniteTransition.animateFloat(
+                                initialValue = 0.4f,
+                                targetValue = 1.0f,
+                                animationSpec = infiniteRepeatable(
+                                    animation = tween(800, easing = FastOutSlowInEasing),
+                                    repeatMode = RepeatMode.Reverse
+                                ),
+                                label = "glow"
+                            )
+
                             Box(
                                 modifier = Modifier
                                     .size(layoutConfig.galleryThumbSizeDp.dp)
                                     .clip(CircleShape)
                                     .background(Color(0x22FFFFFF))
-                                    .border(1.5.dp, Color.White.copy(alpha = 0.35f), CircleShape)
+                                    .border(
+                                        if (isPendingAi) 2.dp else 1.5.dp,
+                                        if (isPendingAi) Color(0xFF00E5FF).copy(alpha = glowAlpha) else Color.White.copy(alpha = 0.35f),
+                                        CircleShape
+                                    )
                                     .clickable { onGalleryClick() }
                                     .testTag("gallery_thumbnail_button"),
                                 contentAlignment = Alignment.Center
@@ -212,6 +228,21 @@ fun BottomControlBar(
                                         contentScale = ContentScale.Crop,
                                         modifier = Modifier.fillMaxSize()
                                     )
+                                    if (isPendingAi) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .background(Color.Black.copy(alpha = 0.35f)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                text = "AI",
+                                                color = Color(0xFF00E5FF),
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.ExtraBold
+                                            )
+                                        }
+                                    }
                                 } else {
                                     Icon(
                                         imageVector = Icons.Outlined.PhotoLibrary,
